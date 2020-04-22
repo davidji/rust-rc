@@ -1,0 +1,12 @@
+[package]
+name = "protocol"
+version = "0.1.0"
+authors = ["David Ireland <davidji@pobox.com>"]
+edition = "2018"
+
+[dependencies]
+serde = { version = "1.0.106", default-features = false }
+
+[features]
+defaults = []
+use-std = []

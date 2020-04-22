@@ -1,0 +1,29 @@
+[package]
+authors = ["David Ireland <davidji@pobox.com>"]
+edition = "2018"
+name = "receiver"
+version = "0.1.0"
+
+[dependencies]
+embedded-hal = { version = "0.2.3", features = [ "unproven" ] }
+stm32f1xx-hal = { version = "0.5.3", features = ["rt", "stm32f103", "medium" ] }
+cortex-m = "0.6.2"
+cortex-m-semihosting = "0.3.5"
+panic-semihosting = "0.5.3"
+cortex-m-rtfm = "0.5.1"
+nb = "0.1.2"
+stm32f1 = { version = "0.9.0", features = ["rt", "stm32f103" ] }
+heapless = "0.5.4"
+postcard = "0.4.3"
+arraydeque = { version = "0.4", default-features = false }
+protocol = { path = "../protocol", version="0.1.0" } 
+serde = { version = "1.0.106", default-features = false }
+cobs = { version = "0.1.4", default-features = false }
+embedded-nrf24l01 = { git = "https://github.com/astro/embedded-nrf24l01" }
+
+# this lets you use `cargo fix`!
+[[bin]]
+name = "receiver"
+test = false
+bench = false
+

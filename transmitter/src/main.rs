@@ -26,11 +26,15 @@ use stm32f1xx_hal::{
     pac,
     gpio::{ 
         Alternate, Analog, Floating, Input, Output, PushPull, State,
-        gpioa::{ PA0, PA1, PA2, PA3, PA5, PA6, PA7},
+        gpioa::{ PA0, PA1, PA2, PA3, 
+            PA5, // SCLK 
+            PA6, // MISO
+            PA7  // MOSI
+        },
         gpiob::{ 
+            PB0,  // CE
+            PB1,  // CSN
             PB12, // LED 
-            PB0, // CE
-            PB1 // CSN
         },
     },
     spi::{ Mode, Phase, Polarity, Spi, Spi1NoRemap },

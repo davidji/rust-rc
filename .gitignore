@@ -1,2 +1,6 @@
 /target/
 /Cargo.lock
+/receiver/target/
+/receiver/Cargo.lock
+/transmitter/target/
+/transmitter/Cargo.lock

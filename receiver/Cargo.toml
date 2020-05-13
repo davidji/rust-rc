@@ -20,7 +20,8 @@ arraydeque = { version = "0.4", default-features = false }
 protocol = { path = "../protocol", version="0.1.0" } 
 serde = { version = "1.0.106", default-features = false }
 cobs = { version = "0.1.4", default-features = false }
-embedded-nrf24l01 = { git = "https://github.com/astro/embedded-nrf24l01" }
+# embedded-nrf24l01 = { git = "https://github.com/astro/embedded-nrf24l01" }
+embedded-nrf24l01 = { path="../../embedded-nrf24l01", version="0.2.0-davidji.1" }
 usb-device = "0.2.5"
 usbd-serial = "0.1.0"
 

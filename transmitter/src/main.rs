@@ -16,7 +16,7 @@ use cortex_m::{ singleton };
 use protocol;
 use postcard;
 use embedded_nrf24l01::{
-    NRF24L01, StandbyMode
+    NRF24L01, StandbyMode, Configuration, DataRate, CrcMode
 };
 
 use stm32f1xx_hal::{
@@ -31,10 +31,10 @@ use stm32f1xx_hal::{
             PA6, // MISO
             PA7  // MOSI
         },
-        gpiob::{ 
+        gpiob::{
             PB0,  // CE
             PB1,  // CSN
-            PB12, // LED 
+            PB12, // LED
         },
     },
     spi::{ Mode, Phase, Polarity, Spi, Spi1NoRemap },
@@ -53,7 +53,7 @@ type RadioSpi = Spi<SPI1, Spi1NoRemap,
 type Radio = NRF24L01<Infallible, RadioCe, RadioCsn, RadioSpi>;
 
 pub struct Counter {
-    correlation_id: i32,
+    correlation_id: u32,
 }
 
 pub struct JoystickAdcPins(PA0<Analog>, PA1<Analog>, PA2<Analog>, PA3<Analog>);
@@ -96,10 +96,11 @@ const APP: () = {
         let mut afio = cx.device.AFIO.constrain(&mut rcc.apb2);
 
         let mut gpiob = cx.device.GPIOB.split(&mut rcc.apb2);
-        let led = gpiob.pb12.into_push_pull_output_with_state(&mut gpiob.crh, State::Low);
+        let mut led = gpiob.pb12.into_push_pull_output_with_state(&mut gpiob.crh, State::Low);
 
         // Prepare the GPIO peripherals
         let mut gpioa = cx.device.GPIOA.split(&mut rcc.apb2);
+
         let ce = gpiob.pb0.into_push_pull_output(&mut gpiob.crl);
         let csn = gpiob.pb1.into_push_pull_output(&mut gpiob.crl);
 
@@ -124,7 +125,16 @@ const APP: () = {
             &mut rcc.apb2
         );
 
-        let radio = NRF24L01::new(ce, csn, spi).unwrap();
+        let mut radio = NRF24L01::new(ce, csn, spi).unwrap();
+        radio.set_frequency(protocol::FREQUENCY).unwrap();
+        radio.set_rx_addr(0, &protocol::RX_ADDRESS).unwrap();
+        radio.set_tx_addr(&protocol::RX_ADDRESS).unwrap();
+        radio.set_rf(DataRate::R250Kbps, 0).unwrap();
+        radio.set_auto_retransmit(0b0100, 15).unwrap();
+        radio.set_crc(Some(CrcMode::TwoBytes)).unwrap();
+        radio.set_pipes_rx_lengths(&[ None; 6]).unwrap();
+        radio.flush_tx().unwrap();
+        radio.flush_rx().unwrap();
 
 	    let joystick_adc = adc::Adc::adc1(cx.device.ADC1, &mut rcc.apb2, clocks);
     	let joystick_channels = JoystickAdcPins(
@@ -138,8 +148,9 @@ const APP: () = {
 		let joystick_scan = joystick_adc.with_scan_dma(joystick_channels, dma_ch1);
         
         // Configure the syst timer to trigger an update every milli second and enables interrupt
-        let mut timer = Timer::tim1(cx.device.TIM1, &clocks, &mut rcc.apb2).start_count_down(1.khz());
+        let mut timer = Timer::tim1(cx.device.TIM1, &clocks, &mut rcc.apb2).start_count_down(100.hz());
         timer.listen(Event::Update);
+        led.toggle().unwrap();
 
         init::LateResources { 
             radio: Some(radio),
@@ -156,23 +167,36 @@ const APP: () = {
     fn update(c: update::Context) {
 	   	let (joystick_scan, dma_buffer) = c.resources.joystick_scan.take().unwrap();
         let (dma_buffer, joystick_scan) = joystick_scan.read(dma_buffer).wait();
-        c.spawn.transmit(protocol::TransmitterMessage::ChannelValues(*dma_buffer)).unwrap();
+        let mut scaled : [u16; 4] = [0; 4];
+        for i in 0..4 {
+            scaled[i] = dma_buffer[4]<<4;
+        }
+        match c.spawn.transmit(protocol::TransmitterMessage::ChannelValues(scaled)) {
+            Ok(_) => {},
+            Err(_) => {} // Don't care if the transmit queue is full - just throw away,
+                         // Maybe set an error status later
+        }
         *c.resources.joystick_scan = Some((joystick_scan, dma_buffer));
         c.resources.timer.clear_update_interrupt_flag();
     }
 
     #[task(resources = [ radio, counter, led ])]
     fn transmit(c: transmit::Context, body: protocol::TransmitterMessage) {
-        if c.resources.counter.correlation_id % 500 == 0 {
+        if c.resources.counter.correlation_id % 50 == 0 {
             c.resources.led.toggle().unwrap();
         }
 		let message = protocol::Transmitter { correlation_id: c.resources.counter.correlation_id, body };
 		c.resources.counter.correlation_id += 1;
-		let standby = c.resources.radio.take().unwrap();
+		let mut standby = c.resources.radio.take().unwrap();
+        standby.flush_tx().unwrap();
+        standby.flush_rx().unwrap();
     	let mut tx = standby.tx().unwrap();
 		let mut buf = [0u8; 32];
 		tx.send(postcard::to_slice(&message, &mut buf).unwrap()).unwrap();
-		tx.wait_empty().unwrap();
+		match tx.wait_empty() {
+            Ok(_) => {},
+            Err(_) => {} // If we can't transmit this time, perhaps we can next time...
+        }
         *c.resources.radio = Some(tx.standby().unwrap());
     }
 

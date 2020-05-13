@@ -4,3 +4,5 @@
 /receiver/Cargo.lock
 /transmitter/target/
 /transmitter/Cargo.lock
+/protocol/target
+/protocol/Cargo.lock

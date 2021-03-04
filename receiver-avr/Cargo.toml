@@ -1,0 +1,26 @@
+[package]
+authors = ["David Ireland <davidji@pobox.com>"]
+edition = "2018"
+name = "receiver-avr"
+version = "0.1.0"
+
+[dependencies]
+# A panic handler is needed.  This is a crate with the most basic one.
+# The `leonardo-panic` example shows a more elaborate version.
+panic-halt = "0.2.0"
+ufmt = "0.1.0"
+nb = "0.1.2"
+arduino-uno = {  git = "https://github.com/rahix/avr-hal", rev = "a20277873a8102998d5fd69743771bd8c0aa9423" }
+
+# Configure the build for minimal size
+[profile.dev]
+panic = "abort"
+lto = true
+opt-level = "s"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+debug = true
+lto = true
+opt-level = "s"

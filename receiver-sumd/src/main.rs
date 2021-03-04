@@ -19,21 +19,21 @@ use embedded_nrf24l01::{
     NRF24L01, RxMode, Payload, Configuration, DataRate, CrcMode
 };
 
-use stm32f1xx_hal::{
+use stm32f0xx_hal::{
 	self,
     prelude::*,
-    gpio::{ AF5, Alternate,  Edge, ExtiPin, Input, Output, PullUp, PushPull },
+    gpio::{ AF5, Alternate,  Input, Output, PullUp, PushPull },
     gpio::{ 
         gpioa::{ 
             PA5,  // SCLK
             PA6,  // MISO
             PA7,  // MOSI
-            PA4,  // CSN
             // PA9,  // TX1: SUMD to flight controller
             // PA10, // RX1: telemetry from flight controller
          },
         gpiob::{ 
             PB0,  // CE
+            PB1,  // CSN
             PB10, // IRQ: Note: if you change this pin you must change the EXTI interrupt below
         },
         gpioc::{
@@ -47,11 +47,10 @@ use stm32f1xx_hal::{
         Tx,
     },
     spi::{ Mode, Phase, Polarity, Spi },
-    stm32::{ SPI1, TIM2, USART1 },
-    timer::{ Timer, Event },
+    stm32::{ SPI1, TIM1, USART1 },
+    timers::{ Timer, Event },
     
 };
-
 
 use usb_device::{
     bus,
@@ -60,24 +59,15 @@ use usb_device::{
 
 use usbd_serial;
 
-use protocol::{ 
-    Transmitter, 
-    TransmitterMessage::*,
-};
-
-use sumd::{ self, Sumd };
-
-use postcard;
-
 type RadioCe = PB0<Output<PushPull>>;
-type RadioCsn = PA4<Output<PushPull>>;
+type RadioCsn = PB1<Output<PushPull>>;
 type RadioIrq = PB10<Input<PullUp>>;
 
 
 type RadioSpi = Spi<SPI1,
-    (PA5<Alternate<AF5>>, 
+    PA5<Alternate<AF5>>, 
      PA6<Alternate<AF5>>, 
-     PA7<Alternate<AF5>>), u8>;
+     PA7<Alternate<AF5>>>;
 
 type Radio = NRF24L01<Infallible, RadioCe, RadioCsn, RadioSpi>;
 
@@ -105,9 +95,7 @@ pub struct Status {
     counter: u32,
     last_correlation_id: u32,
     missed_messages: u32,
-    values: [protocol::Value; 4],
-    interrupts: u32,
-    missed_interrupts: u32,
+    sumd: Option<Payload>,
 }
 
 fn sumd_serial_config() -> serial::config::Config {
@@ -117,18 +105,17 @@ fn sumd_serial_config() -> serial::config::Config {
 
 // type FlightControllerSerial = Serial<USART1, (PA9<Alternate<AF7>>, PA10<Alternate<AF7>>)>;
 
-#[rtfm::app(device = stm32f4::stm32f411, peripherals=true)]
+#[rtic::app(device = stm32f0::stm32f030, peripherals=true)]
 const APP: () = {
 
     struct Resources {
         radio: Option<RxMode<Radio>>,
-        irq: RadioIrq,
         status: Status,
         usb_dev: UsbDevice<'static, UsbBusType>,
         usb_serial: ConsoleSerial,
-        timer: Timer<TIM2>,
+        timer: Timer<TIM1>,
         led: PC13<Output<PushPull>>,
-        flight_controller: Sumd<Tx<USART1>>,
+        flight_controller: Tx<USART1>,
     }
 
     #[init]
@@ -195,11 +182,6 @@ const APP: () = {
             clocks,
         );
 
-        let mut irq = gpiob.pb10.into_pull_up_input();
-        irq.make_interrupt_source(&mut peripherals.SYSCFG);
-        irq.trigger_on_edge(&mut peripherals.EXTI, Edge::FALLING);
-        irq.enable_interrupt(&mut peripherals.EXTI);
-
         let (radio, status) = match NRF24L01::new(ce, csn, spi) {
             Ok(mut radio) => {
                 radio.set_frequency(protocol::FREQUENCY).unwrap();
@@ -214,10 +196,6 @@ const APP: () = {
                 radio.set_pipes_rx_enable(&[true, false, false, false, false, false]).unwrap();
                 radio.flush_tx().unwrap();
                 radio.flush_rx().unwrap();
-
-                radio.set_interrupt_mask(true, true, true).unwrap();
-                radio.set_interrupt_mask(false, false, false).unwrap();
-                radio.clear_interrupts().unwrap();
 
                 match radio.rx() {
                     Ok(rx) => {
@@ -239,46 +217,29 @@ const APP: () = {
             peripherals.USART1, 
             (gpioa.pa9.into_alternate_af7(), gpioa.pa10.into_alternate_af7()),
             sumd_serial_config(),
-            clocks).unwrap();
+            clocks);
 
         let (flight_controller_tx, _) = flight_controller.split();
 
         // Configure the syst timer to trigger an update every second and enables interrupt
-        let mut timer = Timer::tim2(peripherals.TIM2, 100.hz(), clocks);
+        let mut timer = Timer::tim1(peripherals.TIM1, 100.hz(), clocks);
         timer.listen(Event::TimeOut);
 
         init::LateResources {
             radio,
-            irq: irq,
             status: Status {
                 init: status,
-                values: [0; 4],
+                sumd: None,
                 counter: 0,
                 last_correlation_id: 0,
                 missed_messages: 0,
-                interrupts: 0,
-                missed_interrupts: 0,
             },
             usb_dev,
             usb_serial,
             timer,
             led,
-            flight_controller: Sumd::new(flight_controller_tx),
+            flight_controller: flight_controller_tx,
  		}
-    }
-
-    #[task(binds = EXTI15_10, priority = 1, 
-        resources = [ irq, status ],
-        spawn = [ receive ])]
-    fn interrupt(c: interrupt::Context) {
-            c.resources.status.interrupts += 1;
-            c.resources.irq.clear_interrupt_pending_bit();
-            match c.spawn.receive() {
-                Ok(_) => {},
-                Err(_) => {
-                    c.resources.status.missed_interrupts += 1;
-                }
-            };
     }
 
     #[task(resources = [radio, status], spawn=[process])]
@@ -301,39 +262,21 @@ const APP: () = {
 
     #[task(resources=[status])]
     fn process(c: process::Context, payload: Payload) {
-        let result : postcard::Result<Transmitter> = postcard::from_bytes(&payload);
-        match result {
-            Ok(Transmitter { correlation_id, body }) => {
-                c.resources.status.missed_messages += 
-                    correlation_id - c.resources.status.last_correlation_id - 1;
-                c.resources.status.last_correlation_id = correlation_id;
-                match body {
-                    ChannelValues(values) => {
-                        c.resources.status.values = values;
-                    }
-                }
-            },
-
-            Err(_) => {}
-
-        }
+        c.resources.status.sumd = Some(payload);
     }
 
     #[task(resources = [status, usb_serial])]
     fn log_status(c: log_status::Context, can_read: bool, is_full: bool) {
         let _ = writeln!(c.resources.usb_serial, 
-            "Tick; init: {:?} last(missed): {}({}), interrupts(missed): {}({}), can_read: {}, is_full: {}",
+            "Tick; init: {:?} last(missed): {}({}), can_read: {}, is_full: {}",
             c.resources.status.init,
             c.resources.status.last_correlation_id,
             c.resources.status.missed_messages,
-            c.resources.status.interrupts,
-            c.resources.status.missed_interrupts,
             can_read, 
             is_full);
-        let _ = writeln!(c.resources.usb_serial, "channels: {:?}", c.resources.status.values);
     }
 
-    #[task(binds = TIM2, priority = 1, resources = [ status, timer, led, radio ], 
+    #[task(binds = TIM1, priority = 1, resources = [ status, timer, led, radio ], 
         spawn = [ log_status, receive, send_to_flight_controller ])]
     fn tick(c: tick::Context) {
         c.resources.timer.clear_interrupt(Event::TimeOut);
@@ -345,7 +288,7 @@ const APP: () = {
         }
 
         if c.resources.status.counter % 10 == 0 {
-            c.spawn.send_to_flight_controller(c.resources.status.values).unwrap();
+            c.spawn.send_to_flight_controller().unwrap();
         }
 
         if c.resources.status.counter % 500 == 0 {
@@ -363,8 +306,15 @@ const APP: () = {
     }
 
     #[task(resources = [flight_controller, status])]
-    fn send_to_flight_controller(c: send_to_flight_controller::Context, values: [protocol::Value; 4]) {
-        c.resources.flight_controller.send(sumd::Status::Live, &values).unwrap();
+    fn send_to_flight_controller(c: send_to_flight_controller::Context) {
+        match c.resources.status.sumd {
+            Some(payload) => {
+                for byte in payload.as_ref() {
+                    c.resources.flight_controller.write(*byte).unwrap();
+                }
+            },
+            None => {}
+        }
     }
     
     #[task(binds = OTG_FS, resources = [usb_dev, usb_serial])]

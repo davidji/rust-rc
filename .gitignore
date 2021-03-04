@@ -6,3 +6,7 @@
 /transmitter/Cargo.lock
 /protocol/target
 /protocol/Cargo.lock
+/receiver-avr/target
+/receiver-avr/Cargo.lock
+/sumd/target
+/sumd/Cargo.lock

@@ -1,15 +1,15 @@
 // This is based on this document:
 // https://www.deviationtx.com/media/kunena/attachments/98/HoTT-SUMD-Spec-REV01-12062012-pdf.pdf
-
+#![no_std]
 
 use core::{
     convert::From,
-    result::Result,
     u16
 };
 
 use nb;
 use embedded_hal::serial::Write;
+use heapless::{ consts::*, Vec };
 
 // Each packet starts with the vendor id
 const VENDOR_ID : u8 = 0xa8;
@@ -46,10 +46,12 @@ pub const HIGH: u16 = 0x3b60;
 pub const EXTENDED_HIGH: u16 = 0x41a0;
 
 pub const SCALE: u16 = u16::MAX/(HIGH - LOW);
-pub const OFFSET: u16 = u16::MAX - NEUTRAL;
+pub const OFFSET: u16 = NEUTRAL - HIGH/2;
+pub const SCALE_EXTENDED: u16 = u16::MAX/(EXTENDED_HIGH - EXTENDED_LOW);
+pub const OFFSET_EXTENDED: u16 = NEUTRAL - EXTENDED_HIGH/2;
 
-pub fn normalise(value: u16) -> u16 {
-    value/SCALE - OFFSET
+pub fn scale(value: u16) -> u16 {
+    value/SCALE + OFFSET
 }
 
 // Finally a 16 bit CRC, of all the bytes preceding it.
@@ -74,53 +76,60 @@ impl Crc16 {
     }
 }
 
-impl Default for Crc16 {
-    fn default() -> Self { Crc16(0) } 
-}
 
-pub struct Sumd<Out>
-where Out: Write<u8> {
-    crc: Crc16,
-    out: Out,
-}
+pub fn send<Out: Write<u8>>(out: &mut Out, status: Status, values : &[u16]) -> nb::Result<(), Out::Error> {
+    let mut crc = Crc16(0);
 
-impl <Out: Write<u8>> Write<u8> for Sumd<Out> {
-    type Error = Out::Error;
+    let mut write = |c| {
+        crc.update(c);
+        out.write(c)
+    };
 
-    fn write(&mut self, word: u8) -> Result<(), nb::Error<Self::Error>> {
-        self.crc.update(word);
-        self.out.write(word)
-    }
-
-    fn flush(&mut self) -> Result<(), nb::Error<Self::Error>> {
-        self.out.flush()
-    }
-}
-
-impl <Out: Write<u8>> Sumd<Out> {
-    
-    pub fn new(out: Out) -> Self {
-        Self { crc: Default::default(), out }
-    }
-
-    pub fn send(&mut self, status: Status, values : &[u16]) -> Result<(), nb::Error<Out::Error>> {
-        self.crc.0 = 0;
-        self.write(VENDOR_ID)?;
-        self.write(status as u8)?;
-        self.write(values.len() as u8)?;
-        for value in values {
-            for byte in &normalise(*value).to_be_bytes() {
-                self.write(*byte)?;
-            }
+    write(VENDOR_ID)?;
+    write(status as u8)?;
+    write(values.len() as u8)?;
+    for value in values {
+        for byte in &scale(*value).to_be_bytes() {
+            write(*byte)?;
         }
+    }
     
-        for byte in &self.crc.0.to_be_bytes() {
-            self.out.write(*byte)?;
-        }
+    for byte in &crc.0.to_be_bytes() {
+        out.write(*byte)?;
+    }
     
+    out.flush()?;
+    Ok(())
+}
+
+pub struct SumdBuffer(pub Vec<u8, U69>);
+
+impl Write<u8> for SumdBuffer {
+    type Error = u8;
+
+    /// Writes a single word to the serial interface
+    fn write(&mut self, word: u8) -> nb::Result<(), Self::Error> {
+        self.0.push(word)?;
+        Ok(())
+    }
+
+    /// Ensures that none of the previously written words are still buffered
+    fn flush(&mut self) -> nb::Result<(), Self::Error> {
         Ok(())
     }
 }
+
+impl SumdBuffer {
+    pub fn new() -> Self {
+        Self(Vec::new())   
+    }
+    
+    pub fn encode(&mut self, status: Status, values: &[u16]) {
+        send(self, status, values).unwrap();
+    }
+
+}
+
 
 // The whole message then, has a maximum size of 3 + 32*2 + 2 = 69 bytes.
 // It is transmitted on a 115200 baud serial link, 8N1, so the byte rate is

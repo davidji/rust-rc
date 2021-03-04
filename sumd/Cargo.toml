@@ -1,8 +1,13 @@
 [package]
-name = "protocol"
+name = "sumd"
 version = "0.1.0"
 authors = ["David Ireland <davidji@pobox.com>"]
 edition = "2018"
+
+[dependencies]
+embedded-hal = { version = "0.2.4", features = [ "unproven" ] }
+nb = "0.1.2"
+heapless = "0.6.0"
 
 [features]
 defaults = []

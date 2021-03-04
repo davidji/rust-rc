@@ -4,7 +4,6 @@
 #![no_std]
 
 extern crate panic_semihosting;
-extern crate nb;
 
 use core::{
 	option::Option,
@@ -12,9 +11,8 @@ use core::{
 };
 
 use cortex_m::{ singleton };
+use sumd::{ self, SumdBuffer, Status };
 
-use protocol;
-use postcard;
 use embedded_nrf24l01::{
     NRF24L01, StandbyMode, Configuration, DataRate, CrcMode
 };
@@ -42,19 +40,16 @@ use stm32f1xx_hal::{
     timer::{ Timer, CountDownTimer, Event },
 };
 
+
 type RadioCe = PB0<Output<PushPull>>;
 type RadioCsn = PB1<Output<PushPull>>;
 
 type RadioSpi = Spi<SPI1, Spi1NoRemap, 
     (PA5<Alternate<PushPull>>, 
      PA6<Input<Floating>>, 
-     PA7<Alternate<PushPull>>)>;
+     PA7<Alternate<PushPull>>), u8>;
 
 type Radio = NRF24L01<Infallible, RadioCe, RadioCsn, RadioSpi>;
-
-pub struct Counter {
-    correlation_id: u32,
-}
 
 pub struct JoystickAdcPins(PA0<Analog>, PA1<Analog>, PA2<Analog>, PA3<Analog>);
 
@@ -71,11 +66,11 @@ impl SetChannels<JoystickAdcPins> for Adc<ADC1> {
     }
 }
 
-#[rtfm::app(device = stm32f1xx_hal::pac, peripherals=true)]
+
+#[rtic::app(device = stm32f1xx_hal::pac, peripherals=true)]
 const APP: () = {
     struct Resources {
         radio: Option<StandbyMode<Radio>>,
-        counter: Counter,
         joystick_scan: Option<(AdcDma<JoystickAdcPins, Scan>,&'static mut [u16; 4])>,
         timer: CountDownTimer<pac::TIM1>,
         led: PB12<Output<PushPull>>
@@ -154,7 +149,6 @@ const APP: () = {
 
         init::LateResources { 
             radio: Some(radio),
-            counter: Counter { correlation_id: 0 },
             joystick_scan: Some((joystick_scan, singleton!(: [u16; 4] = [0; 4]).unwrap())),
             timer: timer,
             led: led,
@@ -169,9 +163,10 @@ const APP: () = {
         let (dma_buffer, joystick_scan) = joystick_scan.read(dma_buffer).wait();
         let mut scaled : [u16; 4] = [0; 4];
         for i in 0..4 {
-            scaled[i] = dma_buffer[4]<<4;
+            scaled[i] = dma_buffer[i]<<4;
         }
-        match c.spawn.transmit(protocol::TransmitterMessage::ChannelValues(scaled)) {
+
+        match c.spawn.transmit(scaled) {
             Ok(_) => {},
             Err(_) => {} // Don't care if the transmit queue is full - just throw away,
                          // Maybe set an error status later
@@ -180,19 +175,15 @@ const APP: () = {
         c.resources.timer.clear_update_interrupt_flag();
     }
 
-    #[task(resources = [ radio, counter, led ])]
-    fn transmit(c: transmit::Context, body: protocol::TransmitterMessage) {
-        if c.resources.counter.correlation_id % 50 == 0 {
-            c.resources.led.toggle().unwrap();
-        }
-		let message = protocol::Transmitter { correlation_id: c.resources.counter.correlation_id, body };
-		c.resources.counter.correlation_id += 1;
+    #[task(resources = [ radio, led ])]
+    fn transmit(c: transmit::Context, values: [u16; 4]) {
 		let mut standby = c.resources.radio.take().unwrap();
         standby.flush_tx().unwrap();
         standby.flush_rx().unwrap();
     	let mut tx = standby.tx().unwrap();
-		let mut buf = [0u8; 32];
-		tx.send(postcard::to_slice(&message, &mut buf).unwrap()).unwrap();
+        let mut buf = SumdBuffer::new();
+        buf.encode(Status::Live, &values);
+		tx.send(&buf.0).unwrap();
 		match tx.wait_empty() {
             Ok(_) => {},
             Err(_) => {} // If we can't transmit this time, perhaps we can next time...

@@ -5,15 +5,14 @@ name = "receiver"
 version = "0.1.0"
 
 [dependencies]
-embedded-hal = { version = "0.2.3", features = [ "unproven" ] }
-stm32f1xx-hal = { version = "0.7.0", features = ["rt", "stm32f103", "medium" ] }
-cortex-m = "0.7.0"
+embedded-hal = { version = "0.2.4", features = [ "unproven" ] }
+stm32f0xx-hal = { version = "0.17.1", features = [ "rt", "stm32f030x4" ] }
+cortex-m = "0.7.1"
 cortex-m-semihosting = "0.3.5"
 panic-semihosting = "0.5.3"
-cortex-m-rtfm = "0.5.1"
+cortex-m-rtic = "0.5.5"
 nb = "1.0.0"
-stm32f1 = { version = "0.13.0", features = ["rt" ] }
-sumd = { path = "../sumd", version="0.1.0" }
+# stm32f0 = { version = "0.11.0", features = ["rt" ] }
 # embedded-nrf24l01 = { git = "https://github.com/astro/embedded-nrf24l01" }
 embedded-nrf24l01 = { path="../../embedded-nrf24l01", version="0.2.0-davidji.1" }
 usb-device = "0.2.5"

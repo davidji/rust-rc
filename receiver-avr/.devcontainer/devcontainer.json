@@ -1,0 +1,4 @@
+{
+    "build": { "dockerfile": "Dockerfile" },
+    "extensions": [ "rust-lang.rust", "serayuzgur.crates" ],
+}
